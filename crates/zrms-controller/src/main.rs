@@ -187,6 +187,7 @@ async fn handle_control(
             request_id,
             program: request.program,
             args: request.args,
+            working_directory: request.working_directory,
             timeout_ms: request.timeout_ms.clamp(1, MAX_COMMAND_TIMEOUT_MS),
         });
         if sender.send(command).await.is_err() {
