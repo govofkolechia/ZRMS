@@ -31,6 +31,9 @@ pub struct ExecuteCommand {
     pub program: String,
     #[serde(default)]
     pub args: Vec<String>,
+    /// Optional remote working directory for this process.
+    #[serde(default)]
+    pub working_directory: Option<String>,
     pub timeout_ms: u64,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -50,6 +53,9 @@ pub struct ControlRequest {
     pub program: String,
     #[serde(default)]
     pub args: Vec<String>,
+    /// Optional remote working directory for this process.
+    #[serde(default)]
+    pub working_directory: Option<String>,
     pub timeout_ms: u64,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
