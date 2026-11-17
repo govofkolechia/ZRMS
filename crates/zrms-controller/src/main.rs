@@ -5,7 +5,7 @@ use rustls::server::WebPkiClientVerifier;
 use rustls::{RootCertStore, ServerConfig};
 use std::fs::File;
 use std::io::BufReader;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tokio::io::{AsyncBufReadExt, BufReader as AsyncBufReader};
 use tokio::net::{TcpListener, TcpStream};
@@ -27,11 +27,11 @@ struct Args {
     client_ca: PathBuf,
 }
 
-fn certificates(path: &PathBuf) -> Result<Vec<CertificateDer<'static>>> {
+fn certificates(path: &Path) -> Result<Vec<CertificateDer<'static>>> {
     let mut reader = BufReader::new(File::open(path).with_context(|| format!("open {}", path.display()))?);
     Ok(rustls_pemfile::certs(&mut reader).collect::<std::result::Result<Vec<_>, _>>()?)
 }
-fn private_key(path: &PathBuf) -> Result<PrivateKeyDer<'static>> {
+fn private_key(path: &Path) -> Result<PrivateKeyDer<'static>> {
     let mut reader = BufReader::new(File::open(path).with_context(|| format!("open {}", path.display()))?);
     rustls_pemfile::private_key(&mut reader)?.context("no private key found in PEM file")
 }
