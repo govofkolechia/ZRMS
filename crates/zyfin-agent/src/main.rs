@@ -87,14 +87,15 @@ async fn main() -> Result<()> {
     let socket = TcpStream::connect(&args.controller).await.with_context(|| format!("connect to controller {}", args.controller))?;
     let server_name = ServerName::try_from(args.server_name.clone()).context("invalid TLS server name")?;
     let mut stream = connector.connect(server_name, socket).await.context("mutual-TLS handshake failed")?;
-    info!(controller = %args.controller, device_id = ?device.id, hostname = %device.hostname, "secure controller connection established");
+    let device_id = device.id;
+    info!(controller = %args.controller, device_id = ?device_id, hostname = %device.hostname, "secure controller connection established");
     send(&mut stream, &AgentMessage::Hello(AgentHello { protocol_version: PROTOCOL_VERSION, device })).await?;
     let mut sequence = 0_u64;
     let mut interval = time::interval(Duration::from_secs(10));
     loop {
         interval.tick().await;
         sequence += 1;
-        if let Err(err) = send(&mut stream, &AgentMessage::Heartbeat(Heartbeat { device_id: device.id, sequence })).await {
+        if let Err(err) = send(&mut stream, &AgentMessage::Heartbeat(Heartbeat { device_id, sequence })).await {
             warn!(error = %err, "heartbeat failed; agent will exit for service-manager restart");
             return Err(err);
         }
