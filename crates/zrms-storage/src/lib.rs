@@ -13,6 +13,22 @@ pub struct DeviceRecord {
 }
 
 #[derive(Debug, Clone)]
+pub struct CommandAuditRecord {
+    pub request_id: String,
+    pub device_id: DeviceId,
+    pub program: String,
+    pub args_json: String,
+    pub initiator_uid: u32,
+    pub started_at: i64,
+    pub completed_at: Option<i64>,
+    pub exit_code: Option<i32>,
+    pub duration_ms: Option<u64>,
+    pub timed_out: bool,
+    pub outcome: String,
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone)]
 pub struct Database {
     path: PathBuf,
 }
@@ -41,7 +57,25 @@ impl Database {
                 last_seen INTEGER NOT NULL
              );
              CREATE INDEX IF NOT EXISTS idx_devices_status ON devices(status);
-             PRAGMA user_version = 1;",
+             CREATE TABLE IF NOT EXISTS command_history (
+                request_id TEXT PRIMARY KEY NOT NULL,
+                device_id TEXT NOT NULL,
+                program TEXT NOT NULL,
+                args_json TEXT NOT NULL,
+                initiator_uid INTEGER NOT NULL,
+                started_at INTEGER NOT NULL,
+                completed_at INTEGER,
+                exit_code INTEGER,
+                duration_ms INTEGER,
+                timed_out INTEGER NOT NULL DEFAULT 0,
+                outcome TEXT NOT NULL,
+                error TEXT
+             );
+             CREATE INDEX IF NOT EXISTS idx_command_history_started
+                ON command_history(started_at DESC);
+             CREATE INDEX IF NOT EXISTS idx_command_history_device
+                ON command_history(device_id, started_at DESC);
+             PRAGMA user_version = 2;",
         )?;
         Ok(database)
     }
@@ -161,6 +195,111 @@ impl Database {
         )?;
         Ok((total as u64, online as u64))
     }
+
+    pub fn record_command_started(
+        &self,
+        request_id: uuid::Uuid,
+        device_id: DeviceId,
+        program: &str,
+        args: &[String],
+        initiator_uid: u32,
+    ) -> Result<()> {
+        let connection = self.connect()?;
+        let args_json = serde_json::to_string(args)?;
+        connection.execute(
+            "INSERT INTO command_history
+             (request_id, device_id, program, args_json, initiator_uid, started_at, outcome)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'running')",
+            params![
+                request_id.to_string(),
+                device_id.0.to_string(),
+                program,
+                args_json,
+                initiator_uid,
+                now_unix_ms(),
+            ],
+        )?;
+        Ok(())
+    }
+
+    pub fn complete_command(
+        &self,
+        request_id: uuid::Uuid,
+        outcome: &str,
+        exit_code: Option<i32>,
+        duration_ms: Option<u64>,
+        timed_out: bool,
+        error: Option<&str>,
+    ) -> Result<bool> {
+        let connection = self.connect()?;
+        let changed = connection.execute(
+            "UPDATE command_history
+             SET completed_at = ?1, exit_code = ?2, duration_ms = ?3,
+                 timed_out = ?4, outcome = ?5, error = ?6
+             WHERE request_id = ?7",
+            params![
+                now_unix_ms(),
+                exit_code,
+                duration_ms.map(|value| value as i64),
+                timed_out,
+                outcome,
+                error,
+                request_id.to_string(),
+            ],
+        )?;
+        Ok(changed == 1)
+    }
+
+    pub fn list_command_history(&self, limit: u32) -> Result<Vec<CommandAuditRecord>> {
+        let connection = self.connect()?;
+        let mut statement = connection.prepare(
+            "SELECT request_id, device_id, program, args_json, initiator_uid,
+                    started_at, completed_at, exit_code, duration_ms, timed_out,
+                    outcome, error
+             FROM command_history
+             ORDER BY started_at DESC
+             LIMIT ?1",
+        )?;
+        let rows = statement.query_map([limit.clamp(1, 500)], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
+                row.get::<_, u32>(4)?,
+                row.get::<_, i64>(5)?,
+                row.get::<_, Option<i64>>(6)?,
+                row.get::<_, Option<i32>>(7)?,
+                row.get::<_, Option<i64>>(8)?,
+                row.get::<_, bool>(9)?,
+                row.get::<_, String>(10)?,
+                row.get::<_, Option<String>>(11)?,
+            ))
+        })?;
+
+        let mut records = Vec::new();
+        for row in rows {
+            let (request_id, device_id, program, args_json, initiator_uid,
+                started_at, completed_at, exit_code, duration_ms, timed_out,
+                outcome, error) = row?;
+            records.push(CommandAuditRecord {
+                request_id,
+                device_id: DeviceId(uuid::Uuid::parse_str(&device_id)
+                    .context("invalid device ID in command history")?),
+                program,
+                args_json,
+                initiator_uid,
+                started_at,
+                completed_at,
+                exit_code,
+                duration_ms: duration_ms.map(|value| value as u64),
+                timed_out,
+                outcome,
+                error,
+            });
+        }
+        Ok(records)
+    }
 }
 
 fn now_unix() -> i64 {
@@ -168,4 +307,11 @@ fn now_unix() -> i64 {
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs() as i64
+}
+
+fn now_unix_ms() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as i64
 }
