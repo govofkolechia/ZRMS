@@ -144,7 +144,9 @@ async fn handle_control(
     socket: tokio::net::UnixStream,
     agents: AgentMap,
     pending: PendingMap,
+    database: Database,
 ) -> Result<()> {
+    let initiator_uid = socket.peer_cred()?.uid();
     let (read_half, mut write_half) = tokio::io::split(socket);
     let mut lines = AsyncBufReader::new(read_half).lines();
     let Some(line) = lines.next_line().await? else { return Ok(()); };
@@ -154,6 +156,14 @@ async fn handle_control(
         anyhow::bail!("program must not be empty");
     }
     let request_id = Uuid::new_v4();
+    database.record_command_started(
+        request_id,
+        request.device_id,
+        &request.program,
+        &request.args,
+        initiator_uid,
+    )?;
+
     let (reply_tx, reply_rx) = oneshot::channel();
     let sender = agents.lock().await.get(&request.device_id).map(|(_, tx)| tx.clone());
     let response = if let Some(sender) = sender {
@@ -180,13 +190,47 @@ async fn handle_control(
     } else {
         ControlResponse { result: None, error: Some("device is not currently connected".into()) }
     };
+
+    if let Some(result) = response.result.as_ref() {
+        let outcome = if result.timed_out {
+            "timed_out"
+        } else if result.exit_code == Some(0) {
+            "succeeded"
+        } else {
+            "failed"
+        };
+        database.complete_command(
+            request_id,
+            outcome,
+            result.exit_code,
+            Some(result.duration_ms),
+            result.timed_out,
+            None,
+        )?;
+    } else {
+        let error = response.error.as_deref().unwrap_or("unknown command failure");
+        let outcome = if error.contains("not currently connected") {
+            "unavailable"
+        } else if error.contains("timed out") {
+            "response_timeout"
+        } else {
+            "delivery_failed"
+        };
+        database.complete_command(request_id, outcome, None, None, false, Some(error))?;
+    }
+
     let mut frame = serde_json::to_vec(&response)?;
     frame.push(b'\n');
     write_half.write_all(&frame).await?;
     Ok(())
 }
 
-async fn control_listener(path: PathBuf, agents: AgentMap, pending: PendingMap) -> Result<()> {
+async fn control_listener(
+    path: PathBuf,
+    agents: AgentMap,
+    pending: PendingMap,
+    database: Database,
+) -> Result<()> {
     if let Some(parent) = path.parent() {
         if !parent.as_os_str().is_empty() { tokio::fs::create_dir_all(parent).await?; }
     }
@@ -202,8 +246,9 @@ async fn control_listener(path: PathBuf, agents: AgentMap, pending: PendingMap) 
         let (socket, _) = listener.accept().await?;
         let agents = agents.clone();
         let pending = pending.clone();
+        let database = database.clone();
         tokio::spawn(async move {
-            if let Err(error) = handle_control(socket, agents, pending).await {
+            if let Err(error) = handle_control(socket, agents, pending, database).await {
                 warn!(%error, "local control request failed");
             }
         });
@@ -223,7 +268,12 @@ async fn main() -> Result<()> {
     let agents: AgentMap = Arc::new(Mutex::new(HashMap::new()));
     let pending: PendingMap = Arc::new(Mutex::new(HashMap::new()));
     let control_path = args.control_socket.clone();
-    tokio::spawn(control_listener(control_path, agents.clone(), pending.clone()));
+    tokio::spawn(control_listener(
+        control_path,
+        agents.clone(),
+        pending.clone(),
+        database.clone(),
+    ));
     info!(listen = %args.listen, database = %database.path().display(), "ZRMS controller listening with mutual TLS");
     loop {
         let (stream, peer) = listener.accept().await?;
