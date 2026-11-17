@@ -32,15 +32,15 @@ enum Command {
     Exec {
         /// UUID of the target device.
         device_id: String,
-        /// Program followed by its arguments, after --.
-        #[arg(required = true, trailing_var_arg = true, num_args = 1..)]
-        command: Vec<String>,
         /// Remote working directory for this execution.
         #[arg(long)]
         cwd: Option<String>,
         /// Maximum execution time in milliseconds (max 30000).
         #[arg(long, default_value_t = 10_000)]
         timeout_ms: u64,
+        /// Program followed by its arguments, after --.
+        #[arg(required = true, trailing_var_arg = true, num_args = 1..)]
+        command: Vec<String>,
     },
     /// Show recent remote command executions.
     History {
