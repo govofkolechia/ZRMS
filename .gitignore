@@ -4,3 +4,6 @@
 .DS_Store
 .idea/
 .vscode/
+
+# Private TLS keys must never be committed
+/certs/*.key
