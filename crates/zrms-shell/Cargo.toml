@@ -13,5 +13,6 @@ path = "src/main.rs"
 anyhow.workspace = true
 clap = { version = "4", features = ["derive"] }
 tokio.workspace = true
+zrms-protocol = { path = "../zrms-protocol" }
 zrms-core = { path = "../zrms-core" }
 zrms-storage = { path = "../zrms-storage" }
