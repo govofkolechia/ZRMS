@@ -35,16 +35,20 @@ struct Args {
     name: Option<String>,
 }
 fn certificates(path: &Path) -> Result<Vec<CertificateDer<'static>>> {
-    let mut reader = BufReader::new(File::open(path).with_context(|| format!("open {}", path.display()))?);
+    let mut reader =
+        BufReader::new(File::open(path).with_context(|| format!("open {}", path.display()))?);
     Ok(rustls_pemfile::certs(&mut reader).collect::<std::result::Result<Vec<_>, _>>()?)
 }
 fn private_key(path: &Path) -> Result<PrivateKeyDer<'static>> {
-    let mut reader = BufReader::new(File::open(path).with_context(|| format!("open {}", path.display()))?);
+    let mut reader =
+        BufReader::new(File::open(path).with_context(|| format!("open {}", path.display()))?);
     rustls_pemfile::private_key(&mut reader)?.context("no private key found in PEM file")
 }
 fn tls_connector(args: &Args) -> Result<TlsConnector> {
     let mut roots = RootCertStore::empty();
-    for cert in certificates(&args.ca)? { roots.add(cert)?; }
+    for cert in certificates(&args.ca)? {
+        roots.add(cert)?;
+    }
     let config = ClientConfig::builder()
         .with_root_certificates(roots)
         .with_client_auth_cert(certificates(&args.cert)?, private_key(&args.key)?)?;
@@ -52,16 +56,23 @@ fn tls_connector(args: &Args) -> Result<TlsConnector> {
 }
 fn device_identity(args: &Args) -> Result<Device> {
     if let Some(parent) = args.state_file.parent() {
-        if !parent.as_os_str().is_empty() { fs::create_dir_all(parent)?; }
+        if !parent.as_os_str().is_empty() {
+            fs::create_dir_all(parent)?;
+        }
     }
     let id = if args.state_file.exists() {
-        Uuid::parse_str(fs::read_to_string(&args.state_file)?.trim()).context("invalid device ID in state file")?
+        Uuid::parse_str(fs::read_to_string(&args.state_file)?.trim())
+            .context("invalid device ID in state file")?
     } else {
         let id = Uuid::new_v4();
-        fs::write(&args.state_file, format!("{id}\n")).with_context(|| format!("write {}", args.state_file.display()))?;
+        fs::write(&args.state_file, format!("{id}\n"))
+            .with_context(|| format!("write {}", args.state_file.display()))?;
         id
     };
-    let hostname = fs::read_to_string("/etc/hostname").unwrap_or_else(|_| "linux-device".to_owned()).trim().to_owned();
+    let hostname = fs::read_to_string("/etc/hostname")
+        .unwrap_or_else(|_| "linux-device".to_owned())
+        .trim()
+        .to_owned();
     let name = args.name.clone().unwrap_or_else(|| hostname.clone());
     Ok(Device {
         id: DeviceId(id),
@@ -72,7 +83,10 @@ fn device_identity(args: &Args) -> Result<Device> {
         agent_version: env!("CARGO_PKG_VERSION").to_owned(),
     })
 }
-async fn send(stream: &mut tokio_rustls::client::TlsStream<TcpStream>, message: &AgentMessage) -> Result<()> {
+async fn send(
+    stream: &mut tokio_rustls::client::TlsStream<TcpStream>,
+    message: &AgentMessage,
+) -> Result<()> {
     let mut frame = serde_json::to_vec(message)?;
     frame.push(b'\n');
     stream.write_all(&frame).await?;
@@ -80,22 +94,47 @@ async fn send(stream: &mut tokio_rustls::client::TlsStream<TcpStream>, message: 
 }
 #[tokio::main]
 async fn main() -> Result<()> {
-    tracing_subscriber::fmt().with_env_filter(EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"))).init();
+    tracing_subscriber::fmt()
+        .with_env_filter(
+            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),
+        )
+        .init();
     let args = Args::parse();
     let device = device_identity(&args)?;
     let connector = tls_connector(&args)?;
-    let socket = TcpStream::connect(&args.controller).await.with_context(|| format!("connect to controller {}", args.controller))?;
-    let server_name = ServerName::try_from(args.server_name.clone()).context("invalid TLS server name")?;
-    let mut stream = connector.connect(server_name, socket).await.context("mutual-TLS handshake failed")?;
+    let socket = TcpStream::connect(&args.controller)
+        .await
+        .with_context(|| format!("connect to controller {}", args.controller))?;
+    let server_name =
+        ServerName::try_from(args.server_name.clone()).context("invalid TLS server name")?;
+    let mut stream = connector
+        .connect(server_name, socket)
+        .await
+        .context("mutual-TLS handshake failed")?;
     let device_id = device.id;
     info!(controller = %args.controller, device_id = ?device_id, hostname = %device.hostname, "secure controller connection established");
-    send(&mut stream, &AgentMessage::Hello(AgentHello { protocol_version: PROTOCOL_VERSION, device })).await?;
+    send(
+        &mut stream,
+        &AgentMessage::Hello(AgentHello {
+            protocol_version: PROTOCOL_VERSION,
+            device,
+        }),
+    )
+    .await?;
     let mut sequence = 0_u64;
     let mut interval = time::interval(Duration::from_secs(10));
     loop {
         interval.tick().await;
         sequence += 1;
-        if let Err(err) = send(&mut stream, &AgentMessage::Heartbeat(Heartbeat { device_id, sequence })).await {
+        if let Err(err) = send(
+            &mut stream,
+            &AgentMessage::Heartbeat(Heartbeat {
+                device_id,
+                sequence,
+            }),
+        )
+        .await
+        {
             warn!(error = %err, "heartbeat failed; agent will exit for service-manager restart");
             return Err(err);
         }

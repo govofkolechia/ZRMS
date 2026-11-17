@@ -28,28 +28,41 @@ struct Args {
 }
 
 fn certificates(path: &Path) -> Result<Vec<CertificateDer<'static>>> {
-    let mut reader = BufReader::new(File::open(path).with_context(|| format!("open {}", path.display()))?);
+    let mut reader =
+        BufReader::new(File::open(path).with_context(|| format!("open {}", path.display()))?);
     Ok(rustls_pemfile::certs(&mut reader).collect::<std::result::Result<Vec<_>, _>>()?)
 }
 fn private_key(path: &Path) -> Result<PrivateKeyDer<'static>> {
-    let mut reader = BufReader::new(File::open(path).with_context(|| format!("open {}", path.display()))?);
+    let mut reader =
+        BufReader::new(File::open(path).with_context(|| format!("open {}", path.display()))?);
     rustls_pemfile::private_key(&mut reader)?.context("no private key found in PEM file")
 }
 fn tls_acceptor(args: &Args) -> Result<TlsAcceptor> {
     let mut roots = RootCertStore::empty();
-    for cert in certificates(&args.client_ca)? { roots.add(cert)?; }
+    for cert in certificates(&args.client_ca)? {
+        roots.add(cert)?;
+    }
     let verifier = WebPkiClientVerifier::builder(Arc::new(roots)).build()?;
     let config = ServerConfig::builder()
         .with_client_cert_verifier(verifier)
         .with_single_cert(certificates(&args.cert)?, private_key(&args.key)?)?;
     Ok(TlsAcceptor::from(Arc::new(config)))
 }
-async fn handle(stream: TcpStream, peer: std::net::SocketAddr, acceptor: TlsAcceptor) -> Result<()> {
-    let tls = acceptor.accept(stream).await.context("mutual-TLS handshake failed")?;
+async fn handle(
+    stream: TcpStream,
+    peer: std::net::SocketAddr,
+    acceptor: TlsAcceptor,
+) -> Result<()> {
+    let tls = acceptor
+        .accept(stream)
+        .await
+        .context("mutual-TLS handshake failed")?;
     info!(%peer, "agent authenticated; waiting for protocol hello");
     let mut lines = AsyncBufReader::new(tls).lines();
     while let Some(line) = lines.next_line().await? {
-        if line.len() > 64 * 1024 { anyhow::bail!("agent frame exceeds 64 KiB"); }
+        if line.len() > 64 * 1024 {
+            anyhow::bail!("agent frame exceeds 64 KiB");
+        }
         let message: AgentMessage = serde_json::from_str(&line).context("invalid agent message")?;
         match message {
             AgentMessage::Hello(hello) => {
@@ -69,16 +82,24 @@ async fn handle(stream: TcpStream, peer: std::net::SocketAddr, acceptor: TlsAcce
 }
 #[tokio::main]
 async fn main() -> Result<()> {
-    tracing_subscriber::fmt().with_env_filter(EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"))).init();
+    tracing_subscriber::fmt()
+        .with_env_filter(
+            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),
+        )
+        .init();
     let args = Args::parse();
     let acceptor = tls_acceptor(&args)?;
-    let listener = TcpListener::bind(&args.listen).await.with_context(|| format!("bind {}", args.listen))?;
+    let listener = TcpListener::bind(&args.listen)
+        .await
+        .with_context(|| format!("bind {}", args.listen))?;
     info!(listen = %args.listen, "ZRMS controller listening with mutual TLS");
     loop {
         let (stream, peer) = listener.accept().await?;
         let acceptor = acceptor.clone();
         tokio::spawn(async move {
-            if let Err(err) = handle(stream, peer, acceptor).await { error!(%peer, error = %err, "agent connection failed"); }
+            if let Err(err) = handle(stream, peer, acceptor).await {
+                error!(%peer, error = %err, "agent connection failed");
+            }
         });
     }
 }
