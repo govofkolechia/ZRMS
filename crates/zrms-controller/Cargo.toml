@@ -16,6 +16,7 @@ tokio.workspace = true
 tracing.workspace = true
 zrms-core = { path = "../zrms-core" }
 zrms-protocol = { path = "../zrms-protocol" }
+zrms-storage = { path = "../zrms-storage" }
 tracing-subscriber.workspace = true
 
 [[bin]]
