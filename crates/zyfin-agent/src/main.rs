@@ -5,6 +5,7 @@ use rustls::{ClientConfig, RootCertStore};
 use std::fs::{self, File};
 use std::io::BufReader;
 use std::path::{Path, PathBuf};
+use std::process::Stdio;
 use std::sync::Arc;
 use std::time::Instant;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader as AsyncBufReader};
@@ -12,7 +13,7 @@ use tokio::net::TcpStream;
 use tokio::process::Command;
 use tokio::time::{self, Duration};
 use tokio_rustls::TlsConnector;
-use tracing::{info, warn};
+use tracing::info;
 use tracing_subscriber::EnvFilter;
 use uuid::Uuid;
 use zrms_core::{Device, DeviceId, DeviceStatus};
@@ -101,6 +102,8 @@ async fn execute(request: ExecuteCommand) -> CommandResult {
     command
         .args(&request.args)
         .kill_on_drop(true)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
         .env("ZRMS_REMOTE", "1");
     let result = if request.program.is_empty() {
         Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, "program must not be empty"))
