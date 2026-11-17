@@ -31,10 +31,8 @@ pub struct ExecuteCommand {
     pub program: String,
     #[serde(default)]
     pub args: Vec<String>,
-    /// Agent clamps this to MAX_COMMAND_TIMEOUT_MS.
     pub timeout_ms: u64,
 }
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CommandResult {
     pub request_id: Uuid,
@@ -45,6 +43,20 @@ pub struct CommandResult {
     pub timed_out: bool,
 }
 
+/// Local controller IPC request. The Unix socket is restricted to its owning user.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ControlRequest {
+    pub device_id: DeviceId,
+    pub program: String,
+    #[serde(default)]
+    pub args: Vec<String>,
+    pub timeout_ms: u64,
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ControlResponse {
+    pub result: Option<CommandResult>,
+    pub error: Option<String>,
+}
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum AgentMessage {
     Hello(AgentHello),
