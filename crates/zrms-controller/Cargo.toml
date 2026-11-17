@@ -15,6 +15,7 @@ rustls-pemfile.workspace = true
 tokio.workspace = true
 tracing.workspace = true
 zrms-core = { path = "../zrms-core" }
+zrms-protocol = { path = "../zrms-protocol" }
 
 [[bin]]
 name = "zrmsd"
