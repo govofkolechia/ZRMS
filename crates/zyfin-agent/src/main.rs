@@ -107,6 +107,9 @@ async fn execute(request: ExecuteCommand) -> CommandResult {
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .env("ZRMS_REMOTE", "1");
+    if let Some(directory) = request.working_directory.as_deref() {
+        command.current_dir(directory);
+    }
     let result = if request.program.is_empty() {
         Err(std::io::Error::new(
             std::io::ErrorKind::InvalidInput,

@@ -32,12 +32,15 @@ enum Command {
     Exec {
         /// UUID of the target device.
         device_id: String,
-        /// Program followed by its arguments, after --.
-        #[arg(required = true, trailing_var_arg = true, num_args = 1..)]
-        command: Vec<String>,
+        /// Remote working directory for this execution.
+        #[arg(long)]
+        cwd: Option<String>,
         /// Maximum execution time in milliseconds (max 30000).
         #[arg(long, default_value_t = 10_000)]
         timeout_ms: u64,
+        /// Program followed by its arguments, after --.
+        #[arg(required = true, trailing_var_arg = true, num_args = 1..)]
+        command: Vec<String>,
     },
     /// Show recent remote command executions.
     History {
@@ -70,6 +73,7 @@ async fn execute_remote(
     socket_path: &PathBuf,
     device_id: &str,
     command: &[String],
+    working_directory: Option<&str>,
     timeout_ms: u64,
 ) -> Result<()> {
     let id = uuid::Uuid::parse_str(device_id).context("device ID must be a UUID")?;
@@ -84,6 +88,7 @@ async fn execute_remote(
         device_id: zrms_core::DeviceId(id),
         program: program.clone(),
         args: args.to_vec(),
+        working_directory: working_directory.map(str::to_owned),
         timeout_ms: timeout_ms.clamp(1, MAX_COMMAND_TIMEOUT_MS),
     };
     let mut frame = serde_json::to_vec(&request)?;
@@ -257,7 +262,7 @@ async fn run_interactive(database_path: &PathBuf, socket_path: &PathBuf) -> Resu
                 println!("  devices                 List registered devices");
                 println!("  focus <device>          Focus by name, hostname, UUID, or UUID prefix");
                 println!("  unfocus                 Clear the focused device");
-                println!("  exec <program> [args]   Run a command on the focused device");
+                println!("  exec [--cwd <path>] <program> [args]   Run remotely");
                 println!("  history [limit]         Show recent command history");
                 println!("  status                  Show fleet status");
                 println!("  help                    Show this help");
@@ -283,8 +288,11 @@ async fn run_interactive(database_path: &PathBuf, socket_path: &PathBuf) -> Resu
             "exec" => {
                 let Some(device) = focused.as_ref() else { println!("No device focused. Use: focus <device>"); continue; };
                 if args.is_empty() { println!("Usage: exec <program> [arguments...]"); continue; }
-                let command = args;
-                if let Err(error) = execute_remote(socket_path, &device.id.0.to_string(), &command, 10_000).await {
+                let (working_directory, command) = if args.first().is_some_and(|arg| arg == "--cwd") {
+                    if args.len() < 3 { println!("Usage: exec --cwd <remote-path> <program> [arguments...]"); continue; }
+                    (Some(args[1].as_str()), args[2..].to_vec())
+                } else { (None, args) };
+                if let Err(error) = execute_remote(socket_path, &device.id.0.to_string(), &command, working_directory, 10_000).await {
                     eprintln!("Error: {error:#}");
                 }
             }
@@ -395,9 +403,10 @@ async fn main() -> Result<()> {
         Some(Command::Exec {
             device_id,
             command,
+            cwd,
             timeout_ms,
         }) => {
-            execute_remote(&cli.socket, &device_id, &command, timeout_ms).await?;
+            execute_remote(&cli.socket, &device_id, &command, cwd.as_deref(), timeout_ms).await?;
         }
         Some(Command::History { limit }) => {
             let database = Database::open(&cli.database)?;
