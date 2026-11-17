@@ -25,9 +25,11 @@ use zrms_protocol::{
 #[derive(Debug, Parser)]
 #[command(name = "zyfin-agent", about = "ZRMS remote Linux agent")]
 struct Args {
-    #[arg(long, default_value = "192.168.1.11:7443")]
+    /// Controller network address, such as 192.0.2.10:7443 or controller.example.net:7443.
+    #[arg(long)]
     controller: String,
-    #[arg(long, default_value = "192.168.1.11")]
+    /// TLS certificate identity presented by the controller; independent of its network address.
+    #[arg(long, default_value = "zrms-controller")]
     server_name: String,
     #[arg(long)]
     ca: PathBuf,
@@ -172,7 +174,7 @@ async fn main() -> Result<()> {
         .await
         .context("mutual-TLS handshake failed")?;
     let device_id = device.id;
-    info!(controller = %args.controller, device_id = ?device_id, hostname = %device.hostname, "secure controller connection established");
+    info!(controller = %args.controller, server_name = %args.server_name, device_id = ?device_id, hostname = %device.hostname, "secure controller connection established");
 
     let (read_half, mut write_half) = tokio::io::split(stream);
     let mut lines = AsyncBufReader::new(read_half).lines();
