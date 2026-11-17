@@ -345,7 +345,7 @@ mod command_line_tests {
 
     #[test]
     fn empty_input_has_no_arguments() {
-        assert!(parse_command_line("   \\n  ").unwrap().is_empty());
+        assert!(parse_command_line("   \n  ").unwrap().is_empty());
     }
 }
 
