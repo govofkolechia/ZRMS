@@ -1,0 +1,12 @@
+[package]
+name = "zrms-storage"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+rusqlite.workspace = true
+uuid.workspace = true
+zrms-core = { path = "../zrms-core" }
