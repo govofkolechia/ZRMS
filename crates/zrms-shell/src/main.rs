@@ -124,6 +124,56 @@ async fn execute_remote(
 }
 
 
+fn parse_command_line(input: &str) -> std::result::Result<Vec<String>, String> {
+    let mut words = Vec::new();
+    let mut current = String::new();
+    let mut quote: Option<char> = None;
+    let mut escaped = false;
+    let mut token_started = false;
+
+    for ch in input.chars() {
+        if escaped {
+            current.push(ch);
+            escaped = false;
+            token_started = true;
+            continue;
+        }
+        if ch == '\\' && quote != Some('\'') {
+            escaped = true;
+            token_started = true;
+            continue;
+        }
+        match quote {
+            Some(delimiter) if ch == delimiter => quote = None,
+            Some(_) => current.push(ch),
+            None if ch == '\'' || ch == '"' => {
+                quote = Some(ch);
+                token_started = true;
+            }
+            None if ch.is_whitespace() => {
+                if token_started {
+                    words.push(std::mem::take(&mut current));
+                    token_started = false;
+                }
+            }
+            None => {
+                current.push(ch);
+                token_started = true;
+            }
+        }
+    }
+    if escaped {
+        return Err("command ends with an unfinished escape (backslash)".to_owned());
+    }
+    if let Some(delimiter) = quote {
+        return Err(format!("unclosed {delimiter} quote"));
+    }
+    if token_started {
+        words.push(current);
+    }
+    Ok(words)
+}
+
 fn resolve_device(database: &Database, query: &str) -> Result<zrms_core::Device> {
     let devices = database.list_devices()?;
     let matches: Vec<_> = devices.into_iter().filter(|record| {
@@ -191,9 +241,16 @@ async fn run_interactive(database_path: &PathBuf, socket_path: &PathBuf) -> Resu
         io::stdout().flush()?;
         line.clear();
         if stdin.read_line(&mut line)? == 0 { println!(); break; }
-        let mut words = line.split_whitespace();
+        let parsed = match parse_command_line(&line) {
+            Ok(words) => words,
+            Err(error) => {
+                eprintln!("Parse error: {error}");
+                continue;
+            }
+        };
+        let mut words = parsed.into_iter();
         let Some(action) = words.next() else { continue; };
-        let args: Vec<&str> = words.collect();
+        let args: Vec<String> = words.collect();
         match action.to_ascii_lowercase().as_str() {
             "exit" | "quit" => break,
             "help" => {
@@ -205,7 +262,7 @@ async fn run_interactive(database_path: &PathBuf, socket_path: &PathBuf) -> Resu
                 println!("  status                  Show fleet status");
                 println!("  help                    Show this help");
                 println!("  exit                    Leave the ZRMS shell");
-                println!("Arguments are whitespace-separated; use 'sh -c' for shell syntax.");
+                println!("Use single/double quotes or backslash escapes for arguments containing spaces.");
             }
             "devices" => if let Err(error) = print_devices(&database) { eprintln!("Error: {error:#}"); },
             "status" => match database.counts() {
@@ -214,7 +271,7 @@ async fn run_interactive(database_path: &PathBuf, socket_path: &PathBuf) -> Resu
             },
             "focus" => {
                 if args.len() != 1 { println!("Usage: focus <device name, hostname, or UUID>"); continue; }
-                match resolve_device(&database, args[0]) {
+                match resolve_device(&database, &args[0]) {
                     Ok(device) => {
                         println!("Focused device: {} ({})", device.name, device.id.0);
                         focused = Some(device);
@@ -226,7 +283,7 @@ async fn run_interactive(database_path: &PathBuf, socket_path: &PathBuf) -> Resu
             "exec" => {
                 let Some(device) = focused.as_ref() else { println!("No device focused. Use: focus <device>"); continue; };
                 if args.is_empty() { println!("Usage: exec <program> [arguments...]"); continue; }
-                let command: Vec<String> = args.iter().map(|arg| (*arg).to_owned()).collect();
+                let command = args;
                 if let Err(error) = execute_remote(socket_path, &device.id.0.to_string(), &command, 10_000).await {
                     eprintln!("Error: {error:#}");
                 }
@@ -243,6 +300,53 @@ async fn run_interactive(database_path: &PathBuf, socket_path: &PathBuf) -> Resu
     }
     println!("Leaving ZRMS.");
     Ok(())
+}
+
+
+#[cfg(test)]
+mod command_line_tests {
+    use super::parse_command_line;
+
+    #[test]
+    fn parses_unquoted_arguments() {
+        assert_eq!(parse_command_line("exec echo hello world").unwrap(),
+            ["exec", "echo", "hello", "world"]);
+    }
+
+    #[test]
+    fn parses_single_and_double_quoted_arguments() {
+        assert_eq!(parse_command_line("exec printf '%s\\n' \"hello world\"").unwrap(),
+            ["exec", "printf", "%s\\n", "hello world"]);
+    }
+
+    #[test]
+    fn parses_escaped_spaces() {
+        assert_eq!(parse_command_line(r"exec echo hello\ world").unwrap(),
+            ["exec", "echo", "hello world"]);
+    }
+
+    #[test]
+    fn preserves_empty_quoted_arguments() {
+        assert_eq!(parse_command_line("exec program '' \"\"").unwrap(),
+            ["exec", "program", "", ""]);
+    }
+
+    #[test]
+    fn allows_quotes_inside_the_other_quote_style() {
+        assert_eq!(parse_command_line("exec echo \"it's fine\"").unwrap(),
+            ["exec", "echo", "it's fine"]);
+    }
+
+    #[test]
+    fn rejects_unclosed_quotes_and_trailing_escapes() {
+        assert!(parse_command_line("exec echo 'unfinished").is_err());
+        assert!(parse_command_line("exec echo trailing\\").is_err());
+    }
+
+    #[test]
+    fn empty_input_has_no_arguments() {
+        assert!(parse_command_line("   \\n  ").unwrap().is_empty());
+    }
 }
 
 #[tokio::main]
