@@ -1,5 +1,6 @@
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
+use std::io::{self, Write};
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
@@ -92,6 +93,128 @@ async fn execute_remote(socket_path: &PathBuf, device_id: &str, command: &[Strin
     Ok(())
 }
 
+
+fn resolve_device(database: &Database, query: &str) -> Result<zrms_core::Device> {
+    let devices = database.list_devices()?;
+    let matches: Vec<_> = devices.into_iter().filter(|record| {
+        let id = record.device.id.0.to_string();
+        id == query || id.starts_with(query)
+            || record.device.name.eq_ignore_ascii_case(query)
+            || record.device.hostname.eq_ignore_ascii_case(query)
+    }).map(|record| record.device).collect();
+    match matches.as_slice() {
+        [device] => Ok(device.clone()),
+        [] => anyhow::bail!("no device matches '{query}'"),
+        _ => anyhow::bail!("'{query}' matches multiple devices; use the full UUID"),
+    }
+}
+
+fn print_devices(database: &Database) -> Result<()> {
+    let devices = database.list_devices()?;
+    if devices.is_empty() {
+        println!("No devices have registered with this controller yet.");
+        return Ok(());
+    }
+    println!("{:<38} {:<28} {:<18} {:<10} {}", "DEVICE ID", "NAME", "PLATFORM", "STATUS", "LAST SEEN");
+    for record in &devices {
+        let status = match record.device.status {
+            DeviceStatus::Online => "ONLINE",
+            DeviceStatus::Offline => "OFFLINE",
+            DeviceStatus::Busy => "BUSY",
+            DeviceStatus::Unknown => "UNKNOWN",
+        };
+        println!("{:<38} {:<28} {:<18} {:<10} {}", record.device.id.0, record.device.name, record.device.platform, status, age_label(record.last_seen));
+    }
+    let (total, online) = database.counts()?;
+    println!("\n{total} device(s) registered · {online} online");
+    Ok(())
+}
+
+fn print_history(database: &Database, limit: u32) -> Result<()> {
+    let records = database.list_command_history(limit)?;
+    if records.is_empty() {
+        println!("No remote command executions have been recorded yet.");
+        return Ok(());
+    }
+    println!("{:<19} {:<10} {:<10} {:<8} {:<12} COMMAND", "STARTED (UNIX MS)", "DEVICE", "USER UID", "EXIT", "OUTCOME");
+    for record in records {
+        let device = record.device_id.0.to_string();
+        let device_short = &device[..8];
+        let exit = record.exit_code.map_or_else(|| "-".to_owned(), |code| code.to_string());
+        println!("{:<19} {:<10} {:<10} {:<8} {:<12} {} {}", record.started_at, device_short, record.initiator_uid, exit, record.outcome, record.program, record.args_json);
+        if let Some(error) = record.error { println!("  error: {error}"); }
+    }
+    Ok(())
+}
+
+async fn run_interactive(database_path: &PathBuf, socket_path: &PathBuf) -> Result<()> {
+    let database = Database::open(database_path)?;
+    let mut focused: Option<zrms_core::Device> = None;
+    println!("ZRMS interactive shell · type 'help' for commands, 'exit' to quit");
+    let stdin = io::stdin();
+    let mut line = String::new();
+    loop {
+        match &focused {
+            Some(device) => print!("ZRMS[{}]> ", device.name),
+            None => print!("ZRMS> "),
+        }
+        io::stdout().flush()?;
+        line.clear();
+        if stdin.read_line(&mut line)? == 0 { println!(); break; }
+        let mut words = line.split_whitespace();
+        let Some(action) = words.next() else { continue; };
+        let args: Vec<&str> = words.collect();
+        match action.to_ascii_lowercase().as_str() {
+            "exit" | "quit" => break,
+            "help" => {
+                println!("  devices                 List registered devices");
+                println!("  focus <device>          Focus by name, hostname, UUID, or UUID prefix");
+                println!("  unfocus                 Clear the focused device");
+                println!("  exec <program> [args]   Run a command on the focused device");
+                println!("  history [limit]         Show recent command history");
+                println!("  status                  Show fleet status");
+                println!("  help                    Show this help");
+                println!("  exit                    Leave the ZRMS shell");
+                println!("Arguments are whitespace-separated; use 'sh -c' for shell syntax.");
+            }
+            "devices" => if let Err(error) = print_devices(&database) { eprintln!("Error: {error:#}"); },
+            "status" => match database.counts() {
+                Ok((total, online)) => println!("Registered: {total} · Online: {online} · Offline: {}", total.saturating_sub(online)),
+                Err(error) => eprintln!("Error: {error:#}"),
+            },
+            "focus" => {
+                if args.len() != 1 { println!("Usage: focus <device name, hostname, or UUID>"); continue; }
+                match resolve_device(&database, args[0]) {
+                    Ok(device) => {
+                        println!("Focused device: {} ({})", device.name, device.id.0);
+                        focused = Some(device);
+                    }
+                    Err(error) => eprintln!("Error: {error:#}"),
+                }
+            }
+            "unfocus" => { focused = None; println!("Device focus cleared."); }
+            "exec" => {
+                let Some(device) = focused.as_ref() else { println!("No device focused. Use: focus <device>"); continue; };
+                if args.is_empty() { println!("Usage: exec <program> [arguments...]"); continue; }
+                let command: Vec<String> = args.iter().map(|arg| (*arg).to_owned()).collect();
+                if let Err(error) = execute_remote(socket_path, &device.id.0.to_string(), &command, 10_000).await {
+                    eprintln!("Error: {error:#}");
+                }
+            }
+            "history" => {
+                let limit = match args.first() {
+                    Some(value) => match value.parse::<u32>() { Ok(limit) => limit, Err(_) => { println!("Usage: history [limit]"); continue; } },
+                    None => 20,
+                };
+                if let Err(error) = print_history(&database, limit) { eprintln!("Error: {error:#}"); }
+            }
+            _ => println!("Unknown command '{action}'. Type 'help' for available commands."),
+        }
+    }
+    println!("Leaving ZRMS.");
+    Ok(())
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
@@ -155,10 +278,7 @@ async fn main() -> Result<()> {
                 }
             }
         }
-        None => {
-            println!("ZRMS> Zyfin Remote Management System");
-            println!("Run zrms --help to see available commands.");
-        }
+        None => { run_interactive(&cli.database, &cli.socket).await?; }
     }
     Ok(())
 }
