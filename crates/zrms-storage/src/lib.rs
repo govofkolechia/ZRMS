@@ -1,7 +1,7 @@
 //! SQLite-backed persistent device registry for the ZRMS controller.
 
 use anyhow::{Context, Result};
-use rusqlite::{params, Connection};
+use rusqlite::{Connection, params};
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 use zrms_core::{Device, DeviceId, DeviceStatus};
@@ -137,7 +137,10 @@ impl Database {
     /// A controller restart invalidates all previously live transport sessions.
     pub fn mark_all_offline(&self) -> Result<()> {
         let connection = self.connect()?;
-        connection.execute("UPDATE devices SET status = 'offline' WHERE status = 'online'", [])?;
+        connection.execute(
+            "UPDATE devices SET status = 'offline' WHERE status = 'online'",
+            [],
+        )?;
         Ok(())
     }
 

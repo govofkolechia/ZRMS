@@ -106,18 +106,36 @@ async fn execute(request: ExecuteCommand) -> CommandResult {
         .stderr(Stdio::piped())
         .env("ZRMS_REMOTE", "1");
     let result = if request.program.is_empty() {
-        Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, "program must not be empty"))
+        Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "program must not be empty",
+        ))
     } else {
         match command.spawn() {
-            Ok(child) => match time::timeout(Duration::from_millis(timeout_ms), child.wait_with_output()).await {
-                Ok(Ok(output)) => {
-                    let stdout = String::from_utf8_lossy(&output.stdout[..output.stdout.len().min(MAX_COMMAND_OUTPUT_BYTES)]).into_owned();
-                    let stderr = String::from_utf8_lossy(&output.stderr[..output.stderr.len().min(MAX_COMMAND_OUTPUT_BYTES)]).into_owned();
-                    Ok((stdout, stderr, output.status.code(), false))
+            Ok(child) => {
+                match time::timeout(Duration::from_millis(timeout_ms), child.wait_with_output())
+                    .await
+                {
+                    Ok(Ok(output)) => {
+                        let stdout = String::from_utf8_lossy(
+                            &output.stdout[..output.stdout.len().min(MAX_COMMAND_OUTPUT_BYTES)],
+                        )
+                        .into_owned();
+                        let stderr = String::from_utf8_lossy(
+                            &output.stderr[..output.stderr.len().min(MAX_COMMAND_OUTPUT_BYTES)],
+                        )
+                        .into_owned();
+                        Ok((stdout, stderr, output.status.code(), false))
+                    }
+                    Ok(Err(error)) => Err(error),
+                    Err(_) => Ok((
+                        String::new(),
+                        format!("command timed out after {timeout_ms} ms"),
+                        None,
+                        true,
+                    )),
                 }
-                Ok(Err(error)) => Err(error),
-                Err(_) => Ok((String::new(), format!("command timed out after {timeout_ms} ms"), None, true)),
-            },
+            }
             Err(error) => Err(error),
         }
     };

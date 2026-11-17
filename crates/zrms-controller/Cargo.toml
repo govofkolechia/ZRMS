@@ -18,6 +18,7 @@ zrms-core = { path = "../zrms-core" }
 zrms-protocol = { path = "../zrms-protocol" }
 zrms-storage = { path = "../zrms-storage" }
 tracing-subscriber.workspace = true
+uuid.workspace = true
 
 [[bin]]
 name = "zrmsd"

@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader as AsyncBufReader};
 use tokio::net::{TcpListener, TcpStream, UnixListener};
-use tokio::sync::{mpsc, oneshot, Mutex};
+use tokio::sync::{Mutex, mpsc, oneshot};
 use tokio::time::{self, Duration};
 use tokio_rustls::TlsAcceptor;
 use tracing::{error, info, warn};
@@ -73,7 +73,10 @@ async fn handle_agent(
     agents: AgentMap,
     pending: PendingMap,
 ) -> Result<()> {
-    let tls = acceptor.accept(stream).await.context("mutual-TLS handshake failed")?;
+    let tls = acceptor
+        .accept(stream)
+        .await
+        .context("mutual-TLS handshake failed")?;
     info!(%peer, "agent authenticated; waiting for protocol hello");
     let (read_half, mut write_half) = tokio::io::split(tls);
     let mut lines = AsyncBufReader::new(read_half).lines();
@@ -130,7 +133,10 @@ async fn handle_agent(
 
     if let Some(id) = registered_device {
         let mut map = agents.lock().await;
-        if map.get(&id).is_some_and(|(active_id, _)| *active_id == connection_id) {
+        if map
+            .get(&id)
+            .is_some_and(|(active_id, _)| *active_id == connection_id)
+        {
             map.remove(&id);
             database.mark_offline(id)?;
             info!(%peer, device_id = ?id, "device marked offline");
@@ -149,9 +155,14 @@ async fn handle_control(
     let initiator_uid = socket.peer_cred()?.uid();
     let (read_half, mut write_half) = tokio::io::split(socket);
     let mut lines = AsyncBufReader::new(read_half).lines();
-    let Some(line) = lines.next_line().await? else { return Ok(()); };
-    if line.len() > 64 * 1024 { anyhow::bail!("control request exceeds 64 KiB"); }
-    let request: ControlRequest = serde_json::from_str(&line).context("invalid local control request")?;
+    let Some(line) = lines.next_line().await? else {
+        return Ok(());
+    };
+    if line.len() > 64 * 1024 {
+        anyhow::bail!("control request exceeds 64 KiB");
+    }
+    let request: ControlRequest =
+        serde_json::from_str(&line).context("invalid local control request")?;
     if request.program.trim().is_empty() {
         anyhow::bail!("program must not be empty");
     }
@@ -165,7 +176,11 @@ async fn handle_control(
     )?;
 
     let (reply_tx, reply_rx) = oneshot::channel();
-    let sender = agents.lock().await.get(&request.device_id).map(|(_, tx)| tx.clone());
+    let sender = agents
+        .lock()
+        .await
+        .get(&request.device_id)
+        .map(|(_, tx)| tx.clone());
     let response = if let Some(sender) = sender {
         pending.lock().await.insert(request_id, reply_tx);
         let command = ControllerMessage::Execute(ExecuteCommand {
@@ -176,19 +191,39 @@ async fn handle_control(
         });
         if sender.send(command).await.is_err() {
             pending.lock().await.remove(&request_id);
-            ControlResponse { result: None, error: Some("agent disconnected before command delivery".into()) }
+            ControlResponse {
+                result: None,
+                error: Some("agent disconnected before command delivery".into()),
+            }
         } else {
-            match time::timeout(Duration::from_millis(MAX_COMMAND_TIMEOUT_MS + 5_000), reply_rx).await {
-                Ok(Ok(result)) => ControlResponse { result: Some(result), error: None },
-                Ok(Err(_)) => ControlResponse { result: None, error: Some("agent connection ended before returning a result".into()) },
+            match time::timeout(
+                Duration::from_millis(MAX_COMMAND_TIMEOUT_MS + 5_000),
+                reply_rx,
+            )
+            .await
+            {
+                Ok(Ok(result)) => ControlResponse {
+                    result: Some(result),
+                    error: None,
+                },
+                Ok(Err(_)) => ControlResponse {
+                    result: None,
+                    error: Some("agent connection ended before returning a result".into()),
+                },
                 Err(_) => {
                     pending.lock().await.remove(&request_id);
-                    ControlResponse { result: None, error: Some("timed out waiting for agent response".into()) }
+                    ControlResponse {
+                        result: None,
+                        error: Some("timed out waiting for agent response".into()),
+                    }
                 }
             }
         }
     } else {
-        ControlResponse { result: None, error: Some("device is not currently connected".into()) }
+        ControlResponse {
+            result: None,
+            error: Some("device is not currently connected".into()),
+        }
     };
 
     if let Some(result) = response.result.as_ref() {
@@ -232,10 +267,17 @@ async fn control_listener(
     database: Database,
 ) -> Result<()> {
     if let Some(parent) = path.parent() {
-        if !parent.as_os_str().is_empty() { tokio::fs::create_dir_all(parent).await?; }
+        if !parent.as_os_str().is_empty() {
+            tokio::fs::create_dir_all(parent).await?;
+        }
     }
-    if path.exists() { tokio::fs::remove_file(&path).await.context("remove stale control socket")?; }
-    let listener = UnixListener::bind(&path).with_context(|| format!("bind control socket {}", path.display()))?;
+    if path.exists() {
+        tokio::fs::remove_file(&path)
+            .await
+            .context("remove stale control socket")?;
+    }
+    let listener = UnixListener::bind(&path)
+        .with_context(|| format!("bind control socket {}", path.display()))?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -258,13 +300,17 @@ async fn control_listener(
 #[tokio::main]
 async fn main() -> Result<()> {
     tracing_subscriber::fmt()
-        .with_env_filter(EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")))
+        .with_env_filter(
+            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),
+        )
         .init();
     let args = Args::parse();
     let database = Database::open(&args.database)?;
     database.mark_all_offline()?;
     let acceptor = tls_acceptor(&args)?;
-    let listener = TcpListener::bind(&args.listen).await.with_context(|| format!("bind {}", args.listen))?;
+    let listener = TcpListener::bind(&args.listen)
+        .await
+        .with_context(|| format!("bind {}", args.listen))?;
     let agents: AgentMap = Arc::new(Mutex::new(HashMap::new()));
     let pending: PendingMap = Arc::new(Mutex::new(HashMap::new()));
     let control_path = args.control_socket.clone();
@@ -282,7 +328,9 @@ async fn main() -> Result<()> {
         let agents = agents.clone();
         let pending = pending.clone();
         tokio::spawn(async move {
-            if let Err(error) = handle_agent(stream, peer, acceptor, database, agents, pending).await {
+            if let Err(error) =
+                handle_agent(stream, peer, acceptor, database, agents, pending).await
+            {
                 error!(%peer, error = %error, "agent connection failed");
             }
         });

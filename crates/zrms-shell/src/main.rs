@@ -53,16 +53,29 @@ fn age_label(timestamp: i64) -> String {
         .unwrap_or_default()
         .as_secs() as i64;
     let seconds = now.saturating_sub(timestamp);
-    if seconds < 5 { "just now".to_owned() }
-    else if seconds < 60 { format!("{seconds}s ago") }
-    else if seconds < 3_600 { format!("{}m ago", seconds / 60) }
-    else if seconds < 86_400 { format!("{}h ago", seconds / 3_600) }
-    else { format!("{}d ago", seconds / 86_400) }
+    if seconds < 5 {
+        "just now".to_owned()
+    } else if seconds < 60 {
+        format!("{seconds}s ago")
+    } else if seconds < 3_600 {
+        format!("{}m ago", seconds / 60)
+    } else if seconds < 86_400 {
+        format!("{}h ago", seconds / 3_600)
+    } else {
+        format!("{}d ago", seconds / 86_400)
+    }
 }
 
-async fn execute_remote(socket_path: &PathBuf, device_id: &str, command: &[String], timeout_ms: u64) -> Result<()> {
+async fn execute_remote(
+    socket_path: &PathBuf,
+    device_id: &str,
+    command: &[String],
+    timeout_ms: u64,
+) -> Result<()> {
     let id = uuid::Uuid::parse_str(device_id).context("device ID must be a UUID")?;
-    let (program, args) = command.split_first().context("missing program to execute")?;
+    let (program, args) = command
+        .split_first()
+        .context("missing program to execute")?;
     let socket = UnixStream::connect(socket_path)
         .await
         .with_context(|| format!("connect to controller socket {}", socket_path.display()))?;
@@ -78,15 +91,32 @@ async fn execute_remote(socket_path: &PathBuf, device_id: &str, command: &[Strin
     write_half.write_all(&frame).await?;
     drop(write_half);
     let mut lines = BufReader::new(read_half).lines();
-    let line = lines.next_line().await?.context("controller closed control socket without a response")?;
-    let response: ControlResponse = serde_json::from_str(&line).context("invalid controller response")?;
+    let line = lines
+        .next_line()
+        .await?
+        .context("controller closed control socket without a response")?;
+    let response: ControlResponse =
+        serde_json::from_str(&line).context("invalid controller response")?;
     if let Some(error) = response.error {
         anyhow::bail!("{error}");
     }
-    let result = response.result.context("controller returned an empty command result")?;
-    if !result.stdout.is_empty() { print!("{}", result.stdout); }
-    if !result.stderr.is_empty() { eprint!("{}", result.stderr); }
-    println!("\n[exit: {} | {} ms{}]", result.exit_code.map_or_else(|| "signal".to_owned(), |code| code.to_string()), result.duration_ms, if result.timed_out { " | timed out" } else { "" });
+    let result = response
+        .result
+        .context("controller returned an empty command result")?;
+    if !result.stdout.is_empty() {
+        print!("{}", result.stdout);
+    }
+    if !result.stderr.is_empty() {
+        eprint!("{}", result.stderr);
+    }
+    println!(
+        "\n[exit: {} | {} ms{}]",
+        result
+            .exit_code
+            .map_or_else(|| "signal".to_owned(), |code| code.to_string()),
+        result.duration_ms,
+        if result.timed_out { " | timed out" } else { "" }
+    );
     if result.exit_code.unwrap_or(1) != 0 || result.timed_out {
         anyhow::bail!("remote command failed");
     }
@@ -226,7 +256,10 @@ async fn main() -> Result<()> {
                 println!("No devices have registered with this controller yet.");
                 return Ok(());
             }
-            println!("{:<38} {:<28} {:<18} {:<10} {}", "DEVICE ID", "NAME", "PLATFORM", "STATUS", "LAST SEEN");
+            println!(
+                "{:<38} {:<28} {:<18} {:<10} {}",
+                "DEVICE ID", "NAME", "PLATFORM", "STATUS", "LAST SEEN"
+            );
             for record in &devices {
                 let status = match record.device.status {
                     DeviceStatus::Online => "ONLINE",
@@ -234,7 +267,14 @@ async fn main() -> Result<()> {
                     DeviceStatus::Busy => "BUSY",
                     DeviceStatus::Unknown => "UNKNOWN",
                 };
-                println!("{:<38} {:<28} {:<18} {:<10} {}", record.device.id.0, record.device.name, record.device.platform, status, age_label(record.last_seen));
+                println!(
+                    "{:<38} {:<28} {:<18} {:<10} {}",
+                    record.device.id.0,
+                    record.device.name,
+                    record.device.platform,
+                    status,
+                    age_label(record.last_seen)
+                );
             }
             let (total, online) = database.counts()?;
             println!("\n{total} device(s) registered · {online} online");
@@ -248,7 +288,11 @@ async fn main() -> Result<()> {
             println!("  Offline devices:    {}", total.saturating_sub(online));
             println!("  Database:           {}", database.path().display());
         }
-        Some(Command::Exec { device_id, command, timeout_ms }) => {
+        Some(Command::Exec {
+            device_id,
+            command,
+            timeout_ms,
+        }) => {
             execute_remote(&cli.socket, &device_id, &command, timeout_ms).await?;
         }
         Some(Command::History { limit }) => {
