@@ -38,6 +38,12 @@ enum Command {
         #[arg(long, default_value_t = 10_000)]
         timeout_ms: u64,
     },
+    /// Show recent remote command executions.
+    History {
+        /// Maximum number of entries to display (1-500).
+        #[arg(long, default_value_t = 20)]
+        limit: u32,
+    },
 }
 
 fn age_label(timestamp: i64) -> String {
@@ -121,6 +127,33 @@ async fn main() -> Result<()> {
         }
         Some(Command::Exec { device_id, command, timeout_ms }) => {
             execute_remote(&cli.socket, &device_id, &command, timeout_ms).await?;
+        }
+        Some(Command::History { limit }) => {
+            let database = Database::open(&cli.database)?;
+            let records = database.list_command_history(limit)?;
+            if records.is_empty() {
+                println!("No remote command executions have been recorded yet.");
+                return Ok(());
+            }
+            println!("{:<19} {:<10} {:<10} {:<8} {:<12} COMMAND", "STARTED (UNIX MS)", "DEVICE", "USER UID", "EXIT", "OUTCOME");
+            for record in records {
+                let device = record.device_id.0.to_string();
+                let device_short = &device[..8];
+                let exit = record.exit_code.map_or_else(|| "-".to_owned(), |code| code.to_string());
+                println!(
+                    "{:<19} {:<10} {:<10} {:<8} {:<12} {} {}",
+                    record.started_at,
+                    device_short,
+                    record.initiator_uid,
+                    exit,
+                    record.outcome,
+                    record.program,
+                    record.args_json,
+                );
+                if let Some(error) = record.error {
+                    println!("  error: {error}");
+                }
+            }
         }
         None => {
             println!("ZRMS> Zyfin Remote Management System");
